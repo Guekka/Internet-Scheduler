@@ -3,7 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-
 #define WIN32_LEAN_AND_MEAN
 
 #define NOGDICAPMASKS
@@ -58,46 +57,23 @@
 
 #include "timer.hpp"
 
-/*
-constexpr ULONG default_buffer_size = 15000;
-std::vector<IP_ADAPTER_INDEX_MAP> list_adapters()
-{
-    const auto family = AF_INET;
-    //   family = AF_INET6;
-
-    // Set the flags to pass to GetAdaptersAddresses
-    const auto flags = GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_PREFIX;
-
-    const auto list = []() noexcept -> std::vector<IP_ADAPTER_ADDRESSES> {
-        auto buf_size = default_buffer_size;
-        auto adresses = std::vector<IP_ADAPTER_ADDRESSES>(default_buffer_size);
-        auto ret = GetAdaptersAddresses(family, flags, NULL, adresses.data(), &buf_size);
-        if (ret == ERROR_SUCCESS) {
-            return adresses;
-        }
-
-        if (ret == ERROR_BUFFER_OVERFLOW) {
-            adresses.resize(buf_size);
-            ret = GetAdaptersAddresses(family, flags, NULL, adresses.data(), &buf_size);
-        }
-
-        if (ret == ERROR_SUCCESS) {
-            return adresses;
-        }
-        return {};
-    }();
-
-    std::vector<IP_ADAPTER_INDEX_MAP> result;
-
-    auto address = list.data();
-    while (address) {
-        result.emplace_back(GetInterfaceInfo(address));
-        address = address->Next;
-    }
-
-    return result;
+constexpr bool verbose = true;
+void log(std::string_view str) {
+    if (!verbose)
+        return;
+    std::clog << str << '\n';
 }
-*/
+
+struct TimePoint {
+    std::chrono::sys_days day =
+        std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    std::chrono::hours hour;
+    std::chrono::minutes min;
+    std::chrono::seconds sec;
+
+    auto operator<=>(const TimePoint&) const = default;
+};
+
 std::vector<IP_ADAPTER_INDEX_MAP> list_adapters()
 {
     // Declare and initialize variables
@@ -126,25 +102,16 @@ std::vector<IP_ADAPTER_INDEX_MAP> list_adapters()
 
 void disable_internet(const std::vector<IP_ADAPTER_INDEX_MAP> &interfaces)
 {
+    log("disabling internet");
     for (auto el : interfaces)
         IpReleaseAddress(&el);
 }
 
-void enable_internet(const std::vector<IP_ADAPTER_INDEX_MAP> &interfaces)
-{
+void enable_internet(const std::vector<IP_ADAPTER_INDEX_MAP>& interfaces) {
+    log("enabling internet");
     for (auto el : interfaces)
         IpRenewAddress(&el);
 }
-
-struct TimePoint
-{
-    std::chrono::hours hour;
-    std::chrono::minutes minute;
-    std::chrono::seconds second;
-
-    auto operator<=>(const TimePoint &) const = default;
-};
-
 struct Period
 {
     TimePoint start;
@@ -160,8 +127,7 @@ public:
 
     Day(std::vector<Period> allowed) : allowed_(std::move(allowed)) {}
 
-    State get_state(TimePoint time)
-    {
+    State get_state(TimePoint time) const {
         for (const auto &per : allowed_) {
             if (time >= per.start && time <= per.end) {
                 return State::Allowed;
@@ -177,25 +143,51 @@ public:
     enum DayType { Week, WeekEnd, Holiday };
 
     std::map<DayType, Day> days_;
+
+    Day::State get_state(TimePoint time) const {
+        const auto type = get_type(time.day);
+        const auto& day = days_.at(type);
+        return day.get_state(time);
+    }
+
+    DayType get_type(std::chrono::sys_days day) const {
+        if (day == std::chrono::Saturday || day == std::chrono::Sunday)
+            return DayType::WeekEnd;
+        return DayType::Week;
+
+        // TODO Holiday
+    }
 };
 
 using namespace std::chrono_literals;
 
-const Day default_weekend_day = {std::vector<Period>{
-    Period{TimePoint{7h, 30min, 0s}, TimePoint{11h, 59min, 59s}},
-    Period{TimePoint{14h, 0min, 0s}, TimePoint{18h, 59min, 59s}},
-
+const Day default_weekend_day = {std::vector{
+    Period{TimePoint{.hour = 7h, .min = 30min, .sec = 0s},
+           TimePoint{.hour = 11h, .min = 59min, .sec = 59s}},
+    Period{TimePoint{.hour = 14h, .min = 0min, .sec = 0s},
+           TimePoint{.hour = 18h, .min = 59min, .sec = 59s}},
 }};
 
 const Day default_holiday_day = default_weekend_day;
 
+const Day default_week_day = {std::vector{
+    Period{TimePoint{.hour = 6h, .min = 30min, .sec = 0s},
+           TimePoint{.hour = 22h, .min = 0min, .sec = 0s}},
+}};
+
+const Schedule default_schedule = {std::map<Schedule::DayType, Day>{
+    {Schedule::DayType::Holiday, default_holiday_day},
+    {Schedule::DayType::WeekEnd, default_weekend_day},
+    {Schedule::DayType::Week, default_week_day},
+}};
+
 class InternetSwitch
 {
     Day::State state_{Day::Allowed};
-    Day schedule_;
+    Schedule schedule_;
 
-public:
-    InternetSwitch(Day sched) : schedule_(std::move(sched)) {}
+   public:
+    InternetSwitch(Schedule sched) : schedule_(std::move(sched)) {}
 
     void update(TimePoint cur_time,
                 const std::vector<IP_ADAPTER_INDEX_MAP> &interfaces,
@@ -204,6 +196,7 @@ public:
         auto new_state = schedule_.get_state(cur_time);
         if (new_state == state_ && !force)
             return;
+        log("state changed " + std::to_string(static_cast<int>(new_state)));
 
         state_ = new_state;
         switch (state_) {
@@ -214,15 +207,16 @@ public:
             disable_internet(interfaces);
             break;
         }
+        std::chrono::hh_mm_ss a(10s);
     }
 };
 
-TimePoint get_current_time()
-{
-    auto raw_time = std::chrono::system_clock::now();
-    std::time_t timet = std::chrono::system_clock::to_time_t(raw_time);
-    std::tm *time = std::localtime(&timet);
-    return {std::chrono::hours(time->tm_hour),
+TimePoint get_current_time() {
+    using namespace std::chrono;
+    auto raw_time = system_clock::now();
+    std::time_t timet = system_clock::to_time_t(raw_time);
+    std::tm* time = std::localtime(&timet);
+    return {floor<days>(raw_time), hours(time->tm_hour),
             std::chrono::minutes(time->tm_min),
             std::chrono::seconds(time->tm_sec)};
 };
@@ -234,8 +228,9 @@ int main(int argc, char **argv)
     InternetSwitch iswitch(default_schedule);
     iswitch.update(get_current_time(), interfaces, true);
 
-    Timer::Poller poll(std::chrono::seconds(1),
-                       [&] { iswitch.update(get_current_time(), interfaces, true); });
+    Timer::Poller poll(std::chrono::seconds(1), [&] {
+        iswitch.update(get_current_time(), interfaces, true);
+    });
 
     return 0;
 }
