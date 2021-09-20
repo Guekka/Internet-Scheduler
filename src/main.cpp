@@ -161,18 +161,20 @@ public:
 
 using namespace std::chrono_literals;
 
+// Note : UTC time used
+
 const Day default_weekend_day = {std::vector{
-    Period{TimePoint{.hour = 7h, .min = 30min, .sec = 0s},
-           TimePoint{.hour = 11h, .min = 59min, .sec = 59s}},
-    Period{TimePoint{.hour = 14h, .min = 0min, .sec = 0s},
-           TimePoint{.hour = 18h, .min = 59min, .sec = 59s}},
+    Period{TimePoint{.hour = 5h, .min = 30min, .sec = 0s},
+           TimePoint{.hour = 10h, .min = 0min, .sec = 0s}},
+    Period{TimePoint{.hour = 12h, .min = 0min, .sec = 0s},
+           TimePoint{.hour = 18h, .min = 00min, .sec = 0s}},
 }};
 
 const Day default_holiday_day = default_weekend_day;
 
 const Day default_week_day = {std::vector{
-    Period{TimePoint{.hour = 6h, .min = 30min, .sec = 0s},
-           TimePoint{.hour = 22h, .min = 0min, .sec = 0s}},
+    Period{TimePoint{.hour = 4h, .min = 30min, .sec = 0s},
+           TimePoint{.hour = 20h, .min = 0min, .sec = 0s}},
 }};
 
 const Schedule default_schedule = {std::map<Schedule::DayType, Day>{
@@ -207,7 +209,6 @@ class InternetSwitch
             disable_internet(interfaces);
             break;
         }
-        std::chrono::hh_mm_ss a(10s);
     }
 };
 
@@ -215,7 +216,7 @@ TimePoint get_current_time() {
     using namespace std::chrono;
     auto raw_time = system_clock::now();
     std::time_t timet = system_clock::to_time_t(raw_time);
-    std::tm* time = std::localtime(&timet);
+    std::tm* time = std::gmtime(&timet);
     return {floor<days>(raw_time), hours(time->tm_hour),
             std::chrono::minutes(time->tm_min),
             std::chrono::seconds(time->tm_sec)};
